@@ -1,6 +1,6 @@
 import { AudioMonitor } from "./lib/audio-monitor.ts";
 import { CaptureSession, describeMediaError } from "./lib/capture.ts";
-import { guessCaptureDevice, listDevices, matchAudioForVideo, shortLabel, type DeviceLists } from "./lib/devices.ts";
+import { guessCaptureDevice, listDevices, matchAudioForVideo, shortLabel, unlockAudioDevices, type DeviceLists } from "./lib/devices.ts";
 import { extensionFor, pickMimeType, Recorder, recordingSupported } from "./lib/recorder.ts";
 import {
   ASPECTS,
@@ -8,13 +8,16 @@ import {
   loadSettings,
   PRESETS,
   REC_FORMATS,
+  ROTATIONS,
   saveSettings,
   SCALES,
   type Aspect,
   type Preset,
   type RecFormat,
+  type Rotation,
   type Scale,
 } from "./lib/settings.ts";
+import { db, FrameTiming, ms, renderStats, type FrameMeta, type StatSection } from "./lib/nerd-stats.ts";
 import { canvasToPng, copyPngToClipboard, renderFrame } from "./lib/snapshot.ts";
 import { $, download, fillSelect, formatBytes, formatDuration, timestamp } from "./lib/util.ts";
 
@@ -32,6 +35,7 @@ const audioSelect = $<HTMLSelectElement>("audioSelect");
 const presetSelect = $<HTMLSelectElement>("presetSelect");
 const aspectSelect = $<HTMLSelectElement>("aspectSelect");
 const scaleSelect = $<HTMLSelectElement>("scaleSelect");
+const rotateSelect = $<HTMLSelectElement>("rotateSelect");
 const muteBtn = $<HTMLButtonElement>("muteBtn");
 const muteIcon = document.getElementById("muteIcon") as SVGPathElement | null;
 const volume = $<HTMLInputElement>("volume");
@@ -55,6 +59,9 @@ const statsText = $("statsText");
 const liveDot = $("liveDot");
 const flash = $("flash");
 const toastEl = $("toast");
+const nerdPanel = $("nerdPanel");
+const nerdBody = $("nerdBody");
+const nerdToggle = $<HTMLInputElement>("nerdToggle");
 $("versionText").textContent = VERSION === "dev" ? "dev build" : `v${VERSION}`;
 
 // ---------- State ----------
@@ -62,7 +69,7 @@ const s = loadSettings();
 const session = new CaptureSession();
 const monitor = new AudioMonitor();
 const recorder = new Recorder();
-let devices: DeviceLists = { video: [], audio: [] };
+let devices: DeviceLists = { video: [], audio: [], audioLocked: false };
 let running = false;
 let openToken = 0;
 let waitingForDevice: string | null = null;
@@ -124,6 +131,7 @@ function populateStaticSelects(): void {
   fillSelect(presetSelect, Object.entries(PRESETS).map(([k, v]) => [k, v.label]), s.preset);
   fillSelect(aspectSelect, Object.entries(ASPECTS).map(([k, v]) => [k, v.label]), s.aspect);
   fillSelect(scaleSelect, Object.entries(SCALES), s.scale);
+  fillSelect(rotateSelect, Object.entries(ROTATIONS), String(s.rotation));
   fillSelect(recFormatSelect, Object.entries(REC_FORMATS), s.recFormat);
   fillSelect(bitrateSelect, BITRATES.map((b) => [String(b), `${b} Mbps`]), String(s.recBitrateMbps));
   shotModeSelect.value = s.shotMode;
@@ -192,6 +200,15 @@ async function open(allowGuess: boolean): Promise<void> {
   if (token !== openToken) return;
 
   devices = await listDevices();
+  if (devices.audioLocked && s.audio !== "none") {
+    try {
+      await unlockAudioDevices();
+      devices = await listDevices();
+    } catch (e) {
+      toast(`Audio: ${describeMediaError(e)}`, true);
+    }
+    if (token !== openToken) return;
+  }
   const activeId = session.videoTrack?.getSettings().deviceId ?? null;
 
   // First run (or stale saved id): steer away from the built-in FaceTime camera towards the capture card.
@@ -211,6 +228,7 @@ async function open(allowGuess: boolean): Promise<void> {
   const track = session.videoTrack;
   if (!track) return;
   track.addEventListener("ended", onVideoEnded, { once: true });
+  timing.reset();
   video.srcObject = session.videoStream;
   await video.play().catch(() => undefined);
 
@@ -237,7 +255,9 @@ async function openAudio(): Promise<void> {
     audioNote = "audio off";
   } else if (s.audio === "auto" || !devices.audio.some((d) => d.deviceId === s.audio)) {
     id = matchAudioForVideo(currentVideoInfo(), devices.audio)?.deviceId;
-    if (!id) {
+    if (!id && devices.audioLocked) {
+      audioNote = "microphone permission needed for audio";
+    } else if (!id) {
       audioNote = "no matching audio input";
       if (devices.audio.length) toast("Couldn't match an audio input to this capture card. Pick it manually under Audio.");
     }
@@ -255,6 +275,8 @@ async function openAudio(): Promise<void> {
       });
       const label = devices.audio.find((d) => d.deviceId === id)?.label;
       audioNote = label ? `audio: ${label}` : "audio on";
+      // Only worth saying when a click would actually make sound (not muted / volume 0).
+      if (monitor.needsGesture && !s.muted && s.volume > 0) toast("Click anywhere to turn on sound");
     } catch (e) {
       audioNote = "audio failed";
       toast(`Audio: ${describeMediaError(e)}`, true);
@@ -294,8 +316,14 @@ async function onDeviceChange(): Promise<void> {
 }
 
 // ---------- Layout / aspect ----------
+function isSideways(): boolean {
+  return s.rotation === 90 || s.rotation === 270;
+}
+
+/** Aspect ratio of the source as shown, i.e. after rotation. */
 function sourceRatio(): number {
-  return video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+  const r = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+  return isSideways() ? 1 / r : r;
 }
 
 function frameRatio(): number | null {
@@ -308,6 +336,8 @@ function applyLayout(): void {
   const r = frameRatio();
   stage.classList.toggle("window", r === null);
   if (r !== null) stage.style.setProperty("--ar", r.toFixed(5));
+  stage.classList.toggle("sideways", isSideways());
+  stage.style.setProperty("--rot", `${s.rotation}deg`);
   video.style.objectFit = s.scale === "crop" ? "cover" : s.scale === "stretch" ? "fill" : "contain";
 }
 
@@ -316,9 +346,12 @@ let frameCount = 0;
 let frameWindowStart = performance.now();
 let measuredFps = 0;
 
-type RVFCVideo = HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
-function countFrames(): void {
+const timing = new FrameTiming();
+
+type RVFCVideo = HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: FrameMeta) => void) => number };
+function countFrames(now: number, meta: FrameMeta): void {
   frameCount++;
+  timing.add(now, meta);
   (video as RVFCVideo).requestVideoFrameCallback?.(countFrames);
 }
 (video as RVFCVideo).requestVideoFrameCallback?.(countFrames);
@@ -351,6 +384,117 @@ function meterLoop(): void {
 }
 requestAnimationFrame(meterLoop);
 
+// ---------- Stats for nerds ----------
+function round(v: number | undefined, digits = 0): string | null {
+  return v === undefined || !Number.isFinite(v) ? null : v.toFixed(digits);
+}
+
+function shortId(id: string | undefined): string | null {
+  return id ? `${id.slice(0, 8)}…` : null;
+}
+
+function collectStats(): StatSection[] {
+  const sections: StatSection[] = [];
+  const vt = session.videoTrack;
+  const vs = vt?.getSettings();
+  const caps = vt?.getCapabilities?.();
+  const preset = PRESETS[s.preset];
+  const q = video.getVideoPlaybackQuality?.();
+  const iv = timing.interval;
+
+  sections.push([
+    "Video",
+    [
+      ["Device", currentVideoInfo()?.label],
+      ["Device id", shortId(vs?.deviceId)],
+      ["Track", vt ? `${vt.readyState}${vt.muted ? " (muted)" : ""}` : null],
+      ["Requested", preset.width ? `${preset.width}×${preset.height} @ ${preset.fps}` : "device default"],
+      ["Negotiated", vs?.width ? `${vs.width}×${vs.height} @ ${round(vs.frameRate, 2)}` : null],
+      ["Decoded", video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : null],
+      ["Aspect", vs?.aspectRatio ? round(vs.aspectRatio, 4) : video.videoHeight ? round(sourceRatio(), 4) : null],
+      ["Resize mode", (vs as { resizeMode?: string } | undefined)?.resizeMode],
+      [
+        "Device max",
+        caps?.width?.max ? `${caps.width.max}×${caps.height?.max ?? "?"} @ ${round(caps.frameRate?.max, 0) ?? "?"}` : null,
+      ],
+    ],
+  ]);
+
+  const dpr = window.devicePixelRatio || 1;
+  const sw = stage.clientWidth;
+  const sh = stage.clientHeight;
+  sections.push([
+    "Display",
+    [
+      ["Viewport", sw ? `${sw}×${sh} css · ${Math.round(sw * dpr)}×${Math.round(sh * dpr)} px` : null],
+      ["Pixel ratio", round(dpr, 2)],
+      ["Scale", video.videoHeight && sh ? `${((sh * dpr) / video.videoHeight).toFixed(2)}× (${s.scale})` : s.scale],
+      ["Frame", ASPECTS[s.aspect].label],
+      ["Rotation", `${s.rotation}°`],
+    ],
+  ]);
+
+  sections.push([
+    "Timing",
+    [
+      ["Measured fps", measuredFps ? measuredFps.toFixed(1) : null],
+      ["Frame interval", iv.avg ? `${ms(iv.avg)} (max ${ms(iv.max)})` : null],
+      ["Jitter", ms(iv.jitter, 2)],
+      ["Latency", ms(timing.latency) ?? "n/a in this browser"],
+      ["Presented", timing.presentedFrames || null],
+      ["Skipped", timing.presentedFrames ? timing.skipped : null],
+      ["Dropped", q ? `${q.droppedVideoFrames} / ${q.totalVideoFrames}` : null],
+    ],
+  ]);
+
+  const at = session.audioTrack;
+  const as = at?.getSettings() as (MediaTrackSettings & { latency?: number }) | undefined;
+  const out = monitor.info();
+  const audioDev = devices.audio.find((d) => d.deviceId === as?.deviceId);
+  sections.push([
+    "Audio",
+    at
+      ? [
+          ["Device", audioDev?.label],
+          ["Track", `${at.readyState}${at.muted ? " (muted)" : ""}`],
+          ["Format", `${as?.sampleRate ? `${as.sampleRate} Hz` : "? Hz"} · ${as?.channelCount ?? "?"} ch${as?.sampleSize ? ` · ${as.sampleSize}-bit` : ""}`],
+          ["Input latency", ms(as?.latency !== undefined ? as.latency * 1000 : undefined)],
+          ["Processing", `AEC ${as?.echoCancellation ? "on" : "off"} · NS ${as?.noiseSuppression ? "on" : "off"} · AGC ${as?.autoGainControl ? "on" : "off"}`],
+          ["Output", out ? `${out.sampleRate} Hz · ${out.state}` : "not started"],
+          ["Output latency", out ? `${ms(out.baseLatency * 1000)} base + ${ms(out.outputLatency * 1000)} device` : null],
+          ["Peak", db(monitor.level())],
+          ["Monitor", s.muted ? "muted" : `${Math.round(s.volume * 100)}%`],
+        ]
+      : [["Status", audioNote || "no audio"]],
+  ]);
+
+  const recRows: Array<[string, string | null]> = [["Format", recorder.active ? recorder.mimeType : (pickMimeType(s.recFormat) ?? null)]];
+  if (recorder.active) {
+    const secs = recorder.elapsedMs / 1000;
+    recRows.push(["Elapsed", formatDuration(recorder.elapsedMs)]);
+    recRows.push(["Size", formatBytes(recorder.bytes)]);
+    recRows.push(["Actual rate", secs > 1 ? `${((recorder.bytes * 8) / secs / 1e6).toFixed(2)} Mbps` : null]);
+  }
+  recRows.push(["Target rate", `${s.recBitrateMbps} Mbps video · 192 kbps audio`]);
+  sections.push(["Recording", recRows]);
+
+  return sections;
+}
+
+let nerdTimer: number | undefined;
+function setNerdStats(on: boolean): void {
+  s.nerdStats = on;
+  nerdToggle.checked = on;
+  nerdPanel.hidden = !on;
+  clearInterval(nerdTimer);
+  if (on) {
+    const tick = () => renderStats(nerdBody, collectStats());
+    tick();
+    nerdTimer = window.setInterval(tick, 500);
+  }
+  persist();
+}
+
 // ---------- Screenshot ----------
 async function screenshot(toClipboard: boolean): Promise<void> {
   if (!running) return;
@@ -359,7 +503,7 @@ async function screenshot(toClipboard: boolean): Promise<void> {
     if (s.shotMode === "displayed") {
       ratio = s.aspect === "window" ? stage.clientWidth / Math.max(1, stage.clientHeight) : frameRatio();
     }
-    const canvas = renderFrame(video, ratio, s.scale);
+    const canvas = renderFrame(video, ratio, s.scale, s.rotation);
     flash.classList.remove("go");
     void flash.offsetWidth; // restart animation
     flash.classList.add("go");
@@ -477,6 +621,15 @@ aspectSelect.addEventListener("change", () => {
   applyLayout();
 });
 
+function setRotation(r: Rotation): void {
+  s.rotation = r;
+  rotateSelect.value = String(r);
+  persist();
+  applyLayout();
+}
+
+rotateSelect.addEventListener("change", () => setRotation(Number(rotateSelect.value) as Rotation));
+
 scaleSelect.addEventListener("change", () => {
   s.scale = scaleSelect.value as Scale;
   persist();
@@ -517,6 +670,9 @@ function toggleMute(): void {
   updateControls();
 }
 
+nerdToggle.addEventListener("change", () => setNerdStats(nerdToggle.checked));
+$("nerdClose").addEventListener("click", () => setNerdStats(false));
+
 muteBtn.addEventListener("click", toggleMute);
 shotBtn.addEventListener("click", (e) => void screenshot(e.shiftKey));
 recBtn.addEventListener("click", toggleRecording);
@@ -534,7 +690,11 @@ document.addEventListener("mousemove", poke);
 navigator.mediaDevices?.addEventListener?.("devicechange", () => void onDeviceChange());
 
 // Browsers only allow audio playback after a user gesture; resume on the first one.
-const resumeAudio = () => void monitor.resume().catch(() => undefined);
+const resumeAudio = () =>
+  void monitor
+    .resume()
+    .catch(() => undefined)
+    .then(updateControls);
 document.addEventListener("pointerdown", resumeAudio);
 document.addEventListener("keydown", resumeAudio);
 
@@ -571,6 +731,13 @@ document.addEventListener("keydown", (e) => {
       applyLayout();
       toast(`Scale: ${SCALES[s.scale]}`);
       break;
+    case "o":
+      setRotation(((s.rotation + 90) % 360) as Rotation);
+      toast(`Rotate: ${ROTATIONS[s.rotation]}`);
+      break;
+    case "i":
+      setNerdStats(!s.nerdStats);
+      break;
     case "h":
       hideControls = !hideControls;
       updateImmersive();
@@ -598,6 +765,7 @@ async function boot(): Promise<void> {
   applyLayout();
   monitor.setVolume(s.volume);
   monitor.setMuted(s.muted);
+  setNerdStats(s.nerdStats);
   updateControls();
 
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {

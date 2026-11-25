@@ -3,6 +3,7 @@ export type Scale = "fit" | "crop" | "stretch";
 export type Preset = "auto" | "2160p30" | "1080p60" | "1080p30" | "720p60" | "720p30" | "480p30";
 export type RecFormat = "auto" | "mp4" | "webm";
 export type ShotMode = "full" | "displayed";
+export type Rotation = 0 | 90 | 180 | 270;
 /** "auto" = pick the audio input that belongs to the capture card, "none" = no audio. */
 export type AudioChoice = "auto" | "none" | (string & {});
 
@@ -12,11 +13,13 @@ export interface Settings {
   preset: Preset;
   aspect: Aspect;
   scale: Scale;
+  rotation: Rotation;
   muted: boolean;
   volume: number;
   recFormat: RecFormat;
   recBitrateMbps: number;
   shotMode: ShotMode;
+  nerdStats: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -25,11 +28,13 @@ export const DEFAULTS: Settings = {
   preset: "1080p60",
   aspect: "native",
   scale: "fit",
+  rotation: 0,
   muted: false,
   volume: 0.8,
   recFormat: "auto",
   recBitrateMbps: 12,
   shotMode: "full",
+  nerdStats: false,
 };
 
 export const PRESETS: Record<Preset, { label: string; width?: number; height?: number; fps?: number }> = {
@@ -59,6 +64,13 @@ export const SCALES: Record<Scale, string> = {
   stretch: "Stretch",
 };
 
+export const ROTATIONS: Record<Rotation, string> = {
+  0: "0°",
+  90: "90° ↻",
+  180: "180°",
+  270: "90° ↺",
+};
+
 export const REC_FORMATS: Record<RecFormat, string> = {
   auto: "Auto (MP4 if supported)",
   mp4: "MP4 (H.264)",
@@ -84,11 +96,13 @@ export function loadSettings(): Settings {
     if (isKeyOf(PRESETS, p.preset)) s.preset = p.preset;
     if (isKeyOf(ASPECTS, p.aspect)) s.aspect = p.aspect;
     if (isKeyOf(SCALES, p.scale)) s.scale = p.scale;
+    if (p.rotation === 0 || p.rotation === 90 || p.rotation === 180 || p.rotation === 270) s.rotation = p.rotation;
     if (typeof p.muted === "boolean") s.muted = p.muted;
     if (typeof p.volume === "number" && p.volume >= 0 && p.volume <= 1) s.volume = p.volume;
     if (isKeyOf(REC_FORMATS, p.recFormat)) s.recFormat = p.recFormat;
     if (typeof p.recBitrateMbps === "number" && p.recBitrateMbps > 0) s.recBitrateMbps = p.recBitrateMbps;
     if (p.shotMode === "full" || p.shotMode === "displayed") s.shotMode = p.shotMode;
+    if (typeof p.nerdStats === "boolean") s.nerdStats = p.nerdStats;
   } catch {
     // Storage unavailable or corrupt: fall back to defaults.
   }

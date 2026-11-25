@@ -1,14 +1,27 @@
 export interface DeviceLists {
   video: MediaDeviceInfo[];
   audio: MediaDeviceInfo[];
+  /** Audio inputs exist but are hidden (no ids / labels) because microphone permission hasn't been granted. */
+  audioLocked: boolean;
 }
 
 export async function listDevices(): Promise<DeviceLists> {
   const all = await navigator.mediaDevices.enumerateDevices();
+  const audioIn = all.filter((d) => d.kind === "audioinput");
   return {
     video: all.filter((d) => d.kind === "videoinput" && d.deviceId),
-    audio: all.filter((d) => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications"),
+    audio: audioIn.filter((d) => d.deviceId && d.label && d.deviceId !== "default" && d.deviceId !== "communications"),
+    audioLocked: audioIn.length > 0 && audioIn.every((d) => !d.deviceId || !d.label),
   };
+}
+
+/**
+ * Video is opened with camera permission only, so browsers hide audio inputs until the
+ * microphone is allowed too. Ask once (briefly opening the default mic) so they can be listed.
+ */
+export async function unlockAudioDevices(): Promise<void> {
+  const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  s.getTracks().forEach((t) => t.stop());
 }
 
 /** Built-in / phone cameras that are almost never the capture card. */
