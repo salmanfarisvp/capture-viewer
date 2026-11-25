@@ -4,7 +4,7 @@ function stopStream(s: MediaStream | null): void {
   s?.getTracks().forEach((t) => t.stop());
 }
 
-function errName(e: unknown): string {
+export function errName(e: unknown): string {
   return e instanceof DOMException ? e.name : "";
 }
 
@@ -13,7 +13,7 @@ export function describeMediaError(e: unknown): string {
     case "NotAllowedError":
       return "Camera/microphone permission was denied. Allow it in the browser's site settings (and in macOS System Settings > Privacy & Security), then retry.";
     case "NotFoundError":
-      return "No capture device found. Plug in the capture card and retry.";
+      return "No capture card detected. Plug it in and it will connect automatically.";
     case "NotReadableError":
       return "The capture card is busy. Close OBS, QuickTime, Zoom or another tab that is using it, then retry.";
     case "OverconstrainedError":
@@ -63,14 +63,17 @@ export class CaptureSession {
       this.videoStream = await navigator.mediaDevices.getUserMedia({ video: sized, audio: false });
     } catch (e) {
       const name = errName(e);
-      if (name === "OverconstrainedError") {
-        // Fall back to whatever the device offers by default.
+      // A missing device shows up as OverconstrainedError on the deviceId constraint, not NotFoundError.
+      const missing =
+        name === "NotFoundError" || (name === "OverconstrainedError" && (e as { constraint?: string }).constraint === "deviceId");
+      if (missing) throw new DOMException("Capture device not found", "NotFoundError");
+      if (name !== "OverconstrainedError") throw e;
+      // The device is there but can't do the requested quality: use whatever it offers by default.
+      try {
         this.videoStream = await navigator.mediaDevices.getUserMedia({ video: base, audio: false });
-      } else if (name === "NotFoundError" && deviceId) {
-        // Saved device id is stale (ids can change after reinstalling the browser, etc).
-        this.videoStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      } else {
-        throw e;
+      } catch (e2) {
+        if (errName(e2) === "OverconstrainedError") throw new DOMException("Capture device not found", "NotFoundError");
+        throw e2;
       }
     }
     return this.videoStream;

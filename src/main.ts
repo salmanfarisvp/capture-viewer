@@ -1,5 +1,5 @@
 import { AudioMonitor } from "./lib/audio-monitor.ts";
-import { CaptureSession, describeMediaError } from "./lib/capture.ts";
+import { CaptureSession, describeMediaError, errName } from "./lib/capture.ts";
 import { guessCaptureDevice, listDevices, matchAudioForVideo, shortLabel, unlockAudioDevices, type DeviceLists } from "./lib/devices.ts";
 import { extensionFor, pickMimeType, Recorder, recordingSupported } from "./lib/recorder.ts";
 import {
@@ -72,7 +72,8 @@ const recorder = new Recorder();
 let devices: DeviceLists = { video: [], audio: [], audioLocked: false };
 let running = false;
 let openToken = 0;
-let waitingForDevice: string | null = null;
+/** The capture card is unplugged / not found: reconnect as soon as it shows up. */
+let waitingForDevice = false;
 let audioNote = "";
 let recTimer: number | undefined;
 let recStamp = "";
@@ -193,6 +194,19 @@ async function open(allowGuess: boolean): Promise<void> {
     await session.openVideo(s.videoDeviceId, s.preset);
   } catch (e) {
     if (token !== openToken) return;
+    if (errName(e) === "NotFoundError") {
+      // Saved card is gone. If another capture card is plugged in (or the saved id went stale), use that.
+      devices = await listDevices().catch(() => devices);
+      if (token !== openToken) return;
+      const guess = guessCaptureDevice(devices.video, true);
+      if (allowGuess && guess && guess.deviceId !== s.videoDeviceId) {
+        s.videoDeviceId = guess.deviceId;
+        persist();
+        return open(false);
+      }
+      waitForDevice();
+      return;
+    }
     setStatus("Not connected");
     showOverlay(describeMediaError(e), "Retry");
     return;
@@ -236,7 +250,7 @@ async function open(allowGuess: boolean): Promise<void> {
   if (token !== openToken) return;
 
   running = true;
-  waitingForDevice = null;
+  waitingForDevice = false;
   hideOverlay();
   refreshDeviceSelects();
   applyLayout();
@@ -286,17 +300,21 @@ async function openAudio(): Promise<void> {
   updateStats();
 }
 
+function waitForDevice(message = "No capture card detected. Plug it in and it will connect automatically."): void {
+  running = false;
+  waitingForDevice = true;
+  setStatus("Waiting for capture card");
+  showOverlay(message, "Retry now");
+  refreshDeviceSelects();
+}
+
 function onVideoEnded(): void {
   if (!running) return;
-  running = false;
-  waitingForDevice = s.videoDeviceId;
   if (recorder.active) void stopRecording();
   session.close();
   monitor.attach(null);
   video.srcObject = null;
-  setStatus("Disconnected");
-  showOverlay("The capture card was disconnected. It will reconnect automatically when plugged back in.", "Retry now");
-  updateControls();
+  waitForDevice("The capture card was disconnected. It will reconnect automatically when plugged back in.");
 }
 
 async function onDeviceChange(): Promise<void> {
@@ -306,8 +324,13 @@ async function onDeviceChange(): Promise<void> {
     return;
   }
   refreshDeviceSelects();
-  if (!running && waitingForDevice && devices.video.some((d) => d.deviceId === waitingForDevice)) {
-    toast("Capture card reconnected");
+  const target = waitingForDevice
+    ? (devices.video.find((d) => d.deviceId === s.videoDeviceId) ?? guessCaptureDevice(devices.video, true))
+    : undefined;
+  if (!running && target) {
+    s.videoDeviceId = target.deviceId;
+    persist();
+    toast("Capture card connected");
     await open(false);
   } else if (running && !session.audioTrack && s.audio === "auto" && !recorder.active) {
     await openAudio();

@@ -28,9 +28,14 @@ export async function unlockAudioDevices(): Promise<void> {
 const NOT_CAPTURE = /facetime|isight|built-?in|integrated|continuity|iphone|ipad|desk view|obs virtual|virtual camera|snap camera|zoom/i;
 const CAPTURE_HINT = /capture|hdmi|usb video|usb3|ms21\d\d|macrosilicon|cam ?link|elgato|avermedia|magewell|uvc|video ?grabber|534d/i;
 
-/** Best guess for the capture card among video inputs (used on first run). */
-export function guessCaptureDevice(video: MediaDeviceInfo[]): MediaDeviceInfo | undefined {
-  return video.find((d) => CAPTURE_HINT.test(d.label)) ?? video.find((d) => d.label && !NOT_CAPTURE.test(d.label));
+/**
+ * Best guess for the capture card among video inputs.
+ * strict = only devices whose name looks like a capture card (never an ordinary webcam).
+ */
+export function guessCaptureDevice(video: MediaDeviceInfo[], strict = false): MediaDeviceInfo | undefined {
+  const hinted = video.find((d) => CAPTURE_HINT.test(d.label));
+  if (hinted || strict) return hinted;
+  return video.find((d) => d.label && !NOT_CAPTURE.test(d.label));
 }
 
 /** USB vendor:product id that Chrome appends to labels, e.g. "USB Video (534d:2109)". */
