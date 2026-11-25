@@ -1,6 +1,6 @@
 {
   "name": "capture-viewer",
-  "version": "0.1.0",
+  "version": "26.11.0",
   "description": "Browser-based viewer for USB HDMI capture cards: live video + audio, aspect ratio control, screenshots and recording. No OBS needed.",
   "private": true,
   "type": "module",
