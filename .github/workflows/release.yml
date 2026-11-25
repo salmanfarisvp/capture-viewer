@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag like v0.2.0 (see `bun run release`) to build and publish a GitHub Release.
+# Push a calendar-version tag like v26.11.0 (see `bun run release`) to build and publish a GitHub Release.
 on:
   push:
     tags: ["v*"]
@@ -43,6 +43,9 @@ jobs:
           cd dist
           zip -r "../capture-viewer-${GITHUB_REF_NAME}.zip" . -x '*.map'
 
+      - name: Release notes
+        run: bun scripts/release-notes.ts "$GITHUB_REF_NAME" > notes.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,6 +54,6 @@ jobs:
           case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" "capture-viewer-${GITHUB_REF_NAME}.zip" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file notes.md \
             --verify-tag \
             $PRERELEASE

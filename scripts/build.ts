@@ -1,6 +1,6 @@
 /**
  * Production build: bundles src/index.html (+ TS + CSS) into dist/ with relative asset
- * paths, so the output works at a domain root (Vercel) or a sub-path (GitHub Pages).
+ * paths, so the output works at a domain root or a sub-path (GitHub Pages).
  *
  * Version shown in the app: APP_VERSION env (set by the release workflow from the git tag),
  * otherwise package.json version.
