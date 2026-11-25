@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="View, record and screenshot a USB HDMI capture card in the browser." />
+    <title>Capture Viewer</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='6' width='28' height='18' rx='3' fill='%2322c55e'/%3E%3Crect x='11' y='26' width='10' height='2' rx='1' fill='%2322c55e'/%3E%3Ccircle cx='16' cy='15' r='4' fill='%230b0d10'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header id="toolbar" class="toolbar">
+        <div class="brand"><span class="dot" id="liveDot"></span>Capture Viewer</div>
+
+        <div class="group">
+          <label class="field"><span>Source</span><select id="videoSelect" disabled></select></label>
+          <label class="field"><span>Audio</span><select id="audioSelect" disabled></select></label>
+          <label class="field"><span>Quality</span><select id="presetSelect"></select></label>
+        </div>
+
+        <div class="group">
+          <label class="field"><span>Frame</span><select id="aspectSelect"></select></label>
+          <label class="field"><span>Scale</span><select id="scaleSelect"></select></label>
+        </div>
+
+        <div class="group audio-ctl">
+          <button id="muteBtn" class="icon" type="button" title="Mute monitor (M)" aria-label="Mute monitor">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path id="muteIcon" d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z" /></svg>
+          </button>
+          <input id="volume" type="range" min="0" max="1" step="0.01" title="Monitor volume" aria-label="Monitor volume" />
+          <div class="meter" title="Input level"><div id="meterFill" class="meter-fill"></div></div>
+        </div>
+
+        <div class="group actions">
+          <button id="shotBtn" type="button" title="Screenshot (S), copy to clipboard (Shift+S)" disabled>Screenshot</button>
+          <button id="recBtn" type="button" class="rec" title="Start / stop recording (R)" disabled>
+            <span class="rec-dot"></span><span id="recLabel">Record</span>
+          </button>
+          <button id="fsBtn" class="icon" type="button" title="Fullscreen (F)" aria-label="Fullscreen">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3H4zm10-5h6v5h-2V6h-4V4zM6 15v3h3v2H4v-5h2zm12 3v-3h2v5h-5v-2h3z" /></svg>
+          </button>
+          <button id="settingsBtn" class="icon" type="button" title="Settings and shortcuts (?)" aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4L10.6 6a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2.1-1.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <main id="viewport" class="viewport">
+        <div id="stage" class="stage">
+          <video id="video" autoplay playsinline muted disablepictureinpicture></video>
+        </div>
+
+        <div id="overlay" class="overlay">
+          <div class="card">
+            <h1>Capture Viewer</h1>
+            <p id="overlayMsg">Plug in your HDMI capture card, then start. Your browser will ask for camera and microphone access; that is how it reads the capture card.</p>
+            <div class="card-actions">
+              <button id="startBtn" type="button" class="primary">Start capture</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="recBadge" class="rec-badge" hidden><span class="rec-dot"></span><span id="recTime">00:00</span><span id="recSize"></span></div>
+        <div id="flash" class="flash"></div>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+
+      <footer id="statusbar" class="statusbar">
+        <span id="statusText">Idle</span>
+        <span id="statsText" class="muted"></span>
+        <span class="spacer"></span>
+        <span class="muted">Press <kbd>?</kbd> for shortcuts</span>
+        <span id="versionText" class="muted"></span>
+      </footer>
+    </div>
+
+    <dialog id="settingsDialog">
+      <form method="dialog">
+        <h2>Settings</h2>
+
+        <fieldset>
+          <legend>Recording</legend>
+          <label class="field"><span>Format</span><select id="recFormatSelect"></select></label>
+          <label class="field"><span>Video bitrate</span><select id="bitrateSelect"></select></label>
+          <p class="muted small" id="recSupport"></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Screenshot</legend>
+          <label class="field">
+            <span>Capture</span>
+            <select id="shotModeSelect">
+              <option value="full">Full source frame</option>
+              <option value="displayed">As displayed (frame + scale)</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Keyboard shortcuts</legend>
+          <dl class="keys">
+            <dt><kbd>S</kbd></dt><dd>Screenshot (download PNG)</dd>
+            <dt><kbd>Shift</kbd>+<kbd>S</kbd></dt><dd>Screenshot to clipboard</dd>
+            <dt><kbd>R</kbd></dt><dd>Start / stop recording</dd>
+            <dt><kbd>F</kbd></dt><dd>Fullscreen</dd>
+            <dt><kbd>M</kbd></dt><dd>Mute / unmute monitor</dd>
+            <dt><kbd>A</kbd></dt><dd>Next frame aspect</dd>
+            <dt><kbd>C</kbd></dt><dd>Next scale mode</dd>
+            <dt><kbd>H</kbd></dt><dd>Hide / show controls</dd>
+            <dt><kbd>?</kbd></dt><dd>This panel</dd>
+          </dl>
+        </fieldset>
+
+        <div class="dialog-actions">
+          <button value="close" class="primary">Done</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

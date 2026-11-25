@@ -1,0 +1,20 @@
+{
+  "name": "capture-viewer",
+  "version": "0.1.0",
+  "description": "Browser-based viewer for USB HDMI capture cards: live video + audio, aspect ratio control, screenshots and recording. No OBS needed.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "bun ./src/index.html",
+    "build": "bun run scripts/build.ts",
+    "preview": "bun run scripts/preview.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun run build",
+    "release": "bun run scripts/release.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
